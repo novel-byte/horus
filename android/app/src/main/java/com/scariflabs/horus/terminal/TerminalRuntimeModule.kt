@@ -537,7 +537,7 @@ class TerminalRuntimeModule(
         ?.take(MAX_PROVISION_STAGE_CHARS)
         .orEmpty()
 
-      val logNames = linkedSetOf(ALPINE_BOOTSTRAP_LOG_NAME, "$target-install.log")
+      val logNames = linkedSetOf(ALPINE_BOOTSTRAP_LOG_NAME, "$target-install.log", PROVISION_PROBE_LOG_NAME)
       val log = buildString {
         for (directory in logDirectories) {
           for (name in logNames) {
@@ -1695,6 +1695,7 @@ class TerminalRuntimeModule(
     const val DIAGNOSTICS_CACHE_RELATIVE_PATH = ".cache/horus"
     const val PROVISION_STAGE_FILE_NAME = "provision-stage"
     const val ALPINE_BOOTSTRAP_LOG_NAME = "alpine-bootstrap.log"
+    const val PROVISION_PROBE_LOG_NAME = "provision-probe.log"
     const val MAX_PROVISION_STAGE_BYTES = 256
     const val MAX_PROVISION_STAGE_CHARS = 64
     const val MAX_PROVISION_LOG_TAIL_BYTES = 6_000

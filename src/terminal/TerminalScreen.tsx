@@ -390,10 +390,16 @@ export function TerminalScreen({client: providedClient, runtime = undefined, onB
             diagnostics.log,
           ].filter((section): section is string => section !== undefined && section.length > 0);
           if (sections.length === 0) return current;
+          const mergedLog = sections.join('\n\n');
+          const mergedStage = diagnostics.stage ?? current.stage;
+          // The streamed terminal hid the guest log, so the first guess had
+          // nothing to read; classify again now that the real log is here.
+          const mergedKind = current.kind === 'unknown' ? classifyInstallFailure(mergedLog, mergedStage, undefined) : current.kind;
           return {
             ...current,
-            ...(diagnostics.stage === undefined ? {} : {stage: diagnostics.stage}),
-            log: sections.join('\n\n'),
+            kind: mergedKind,
+            ...(mergedStage === undefined ? {} : {stage: mergedStage}),
+            log: mergedLog,
           };
         });
       });

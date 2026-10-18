@@ -21,6 +21,8 @@ const NETWORK_PATTERN = new RegExp([
   'fetch failed', 'network request to', 'Could not resolve host', 'Could not resolve',
   'Temporary failure (in name )?resolution', 'Network is unreachable', 'Failed to fetch',
   'Connection timed out', 'Failed to connect', 'unable to (select packages|fetch)', 'temporary error',
+  // apk reports a resolver hiccup as "DNS: transient error (try again later)".
+  'DNS:', 'transient error', 'try again later',
 ].join('|'), 'i');
 
 /** Classifies a failed install from its log, its last stage, and whether Android sees a network. */

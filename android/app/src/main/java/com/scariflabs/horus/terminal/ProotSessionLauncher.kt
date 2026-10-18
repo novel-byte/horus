@@ -1476,12 +1476,74 @@ ${ZSH_EXIT_SCRIPT.prependIndent("      ")}
             run_logged "${'$'}pkg_log" apt_with_status install -y --no-install-recommends "${'$'}@" || pkg_result=${'$'}?
           fi
         else
-          if run_logged "${'$'}pkg_log" apk add --no-cache --no-progress "${'$'}@"; then pkg_result=0; else pkg_result=${'$'}?; fi
+          # apk on Alpine. A resolver hiccup or a dropped download leaves a
+          # half-extracted package and a stale cache behind, and every later
+          # attempt then fails faster against that state ("file exists"), so
+          # retrying alone never recovers. Clear the cache, allow the
+          # overwrite, and try again; a different mirror is the last resort.
+          pkg_result=1
+          pkg_attempt=1
+          while [ "${'$'}pkg_attempt" -le 3 ]; do
+            rm -rf /var/cache/apk /tmp/apk.* 2>/dev/null || true
+            mkdir -p /var/cache/apk
+            if run_logged "${'$'}pkg_log" apk add --no-cache --no-progress --force-overwrite "${'$'}@"; then
+              pkg_result=0
+              break
+            fi
+            pkg_result=${'$'}?
+            pkg_attempt=${'$'}((pkg_attempt + 1))
+            [ "${'$'}pkg_attempt" -le 3 ] || break
+            printf '%s\n' 'HORUS_INSTALL_STAGE=apk_retry'
+            sleep 5
+          done
+          if [ "${'$'}pkg_result" -ne 0 ] && [ -n "${'$'}{HORUS_ALPINE_MIRROR:-}" ]; then
+            sed -i -E "s@^[^#]*/(v[0-9]+\.[0-9]+|edge)/([a-z]+)/?\${'$'}@https://dl-cdn.alpinelinux.org/alpine/\1/\2@" /etc/apk/repositories 2>/dev/null || true
+            rm -rf /var/cache/apk /tmp/apk.* 2>/dev/null || true
+            mkdir -p /var/cache/apk
+            if run_logged "${'$'}pkg_log" apk add --no-cache --no-progress --force-overwrite "${'$'}@"; then
+              pkg_result=0
+            else
+              pkg_result=${'$'}?
+            fi
+          fi
         fi
         kill "${'$'}pkg_watch_pid" 2>/dev/null || true
         wait "${'$'}pkg_watch_pid" 2>/dev/null || true
         : > "${'$'}pkg_progress"
         return "${'$'}pkg_result"
+      }
+      # A bounded snapshot of what the guest can actually reach and do, kept in
+      # its own log so the install-failure screen can show it. Written before
+      # the packages install so it survives an install that never finishes.
+      # Only the apk/Alpine path needs it.
+      provision_probe() {
+        probe_log=/root/.cache/horus/provision-probe.log
+        {
+          printf '=== horus probe ===\n'
+          printf 'apk: %s\n' "${'$'}(apk --version 2>&1 | head -n 1)"
+          printf 'repositories:\n'
+          sed -n '1,8p' /etc/apk/repositories 2>&1 || true
+          printf 'resolv.conf:\n'
+          sed -n '1,8p' /etc/resolv.conf 2>&1 || true
+          printf 'storage: %s\n' "${'$'}(df -h / 2>&1 | tail -n 1)"
+          printf 'resolve: %s\n' "${'$'}(getent hosts dl-cdn.alpinelinux.org 2>&1 | head -n 2 | tr '\n' ' ')"
+          printf 'curl4: %s\n' "${'$'}(curl -4 -sS --connect-timeout 10 -o /dev/null -w '%{http_code}' https://dl-cdn.alpinelinux.org/alpine/v3.24/main/ 2>&1)"
+          printf 'curl6: %s\n' "${'$'}(curl -6 -sS --connect-timeout 10 -o /dev/null -w '%{http_code}' https://dl-cdn.alpinelinux.org/alpine/v3.24/main/ 2>&1)"
+          rm -rf /tmp/fetchprobe 2>/dev/null || true
+          mkdir -p /tmp/fetchprobe 2>/dev/null || true
+          fetch_status=0
+          apk fetch --no-progress -o /tmp/fetchprobe git jq >/tmp/fetchprobe.out 2>&1 || fetch_status=${'$'}?
+          printf 'fetch git+jq: status=%s\n' "${'$'}fetch_status"
+          sed -n '1,8p' /tmp/fetchprobe.out 2>&1 || true
+          ls /tmp/fetchprobe 2>&1 | head -n 4 || true
+          rm -f /root/.cache/horus/linkprobe
+          if ln /bin/busybox /root/.cache/horus/linkprobe 2>/tmp/linkprobe.err; then
+            printf 'hardlink: ok\n'
+          else
+            printf 'hardlink: failed: %s\n' "${'$'}(cat /tmp/linkprobe.err 2>&1)"
+          fi
+          rm -f /root/.cache/horus/linkprobe
+        } >> "${'$'}probe_log" 2>&1
       }
       # Debian's npm (9.2) needs ~400 node-* packages, and its cache moves
       # files with link, then unlink and chmod in parallel, which races
@@ -1965,6 +2027,7 @@ ${ZSH_EXIT_SCRIPT.prependIndent("      ")}
         return "${'$'}download_status"
       }
       mark_provision_stage start
+      if [ "${'$'}horus_pkg" = apk ]; then provision_probe; fi
 
       if [ "${'$'}target" = shell ]; then
         if ! command -v zsh >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1 ||
@@ -1973,6 +2036,7 @@ ${ZSH_EXIT_SCRIPT.prependIndent("      ")}
           [ ! -x /usr/bin/less ] || [ ! -e /usr/share/zoneinfo/UTC ] || ! has_python_venv; then
           mark_provision_stage apk
           if ! pkg_install /root/.cache/horus/alpine-bootstrap.log ${'$'}pkgs_shell; then
+            if [ "${'$'}horus_pkg" = apk ]; then provision_probe; fi
             # PRoot cannot create zsh's versioned hardlink (bin/zsh-5.9) on
             # this Android filesystem. Continue only when both the shell and
             # base utilities extracted successfully for visible clone sessions.

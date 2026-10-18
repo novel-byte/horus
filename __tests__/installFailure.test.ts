@@ -13,6 +13,11 @@ describe('installFailure', () => {
     expect(classifyInstallFailure('', 'codex_failed', true)).toBe('unknown');
   });
 
+  test('reads apk resolver failures as network, not just packages', () => {
+    expect(classifyInstallFailure('ERROR: jq-1.8.2-r0: DNS: transient error (try again later)', 'apk_failed', true)).toBe('network');
+    expect(classifyInstallFailure('ERROR: git-2.54.0-r0: I/O error', 'apk_failed', true)).toBe('packages');
+  });
+
   test('cleans escapes, markers, redraws, and repeated progress from the log', () => {
     const raw = '\u001b[32mHORUS_INSTALL_STAGE=codex\u001b[0m\r\nDownloading Codex… 10%\nDownloading Codex… 20%\nhalf\rwhole\nnpm error boom\n';
     expect(cleanInstallLog(raw)).toBe('Downloading Codex… 20%\nwhole\nnpm error boom');

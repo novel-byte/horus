@@ -858,6 +858,37 @@ class ProotSessionLauncherTest {
   }
 
   @Test
+  fun retriesApkInstallsAfterClearingPoisonedStateAndProbesTheEnvironment() {
+    val base = Files.createTempDirectory("horus-apk-retry-provision").toFile()
+    try {
+      val rootfs = File(base, "rootfs").apply { mkdirs() }
+      File(rootfs, "etc").mkdirs()
+      val home = File(base, "home").apply { mkdirs() }
+      val hostProc = File(base, "proc").apply { mkdirs() }
+      File(hostProc, "stat").writeText("live stat\n")
+      File(hostProc, "loadavg").writeText("0.01 0.02 0.03 1/2 3\n")
+
+      val script = launcher(base, hostProc)
+        .toolchainProvisionLaunchSpec(rootfs, home, TerminalRuntimeContract.TOOLCHAIN_TARGET_SHELL)
+        .argv.last()
+
+      // A failed attempt leaves a half-extracted package and a stale cache,
+      // so a plain retry fails faster; clear it and force the overwrite.
+      assertTrue(script.contains("rm -rf /var/cache/apk /tmp/apk.*"))
+      assertTrue(script.contains("--force-overwrite"))
+      assertTrue(script.contains("HORUS_INSTALL_STAGE=apk_retry"))
+      // And fall back to the upstream CDN when the configured mirror fails.
+      assertTrue(script.contains("https://dl-cdn.alpinelinux.org/alpine/"))
+      // The probe separates a download problem from an extraction problem.
+      assertTrue(script.contains("provision-probe.log"))
+      assertTrue(script.contains("apk fetch --no-progress"))
+      assertTrue(script.contains("getent hosts dl-cdn.alpinelinux.org"))
+    } finally {
+      base.deleteRecursively()
+    }
+  }
+
+  @Test
   fun packageProgressTurnsAptAndApkStatusIntoPercentLines() {
     val base = Files.createTempDirectory("horus-pkg-progress").toFile()
     try {
