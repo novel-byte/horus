@@ -40,6 +40,9 @@ jobs:
           ref: ${{ inputs.ref || 'fix/opencode-arm64-install' }}
           submodules: recursive
           persist-credentials: false
+      # Older refs (e.g. the v1.0.4 tag) predate the .node-version file.
+      - name: Ensure Node version file
+        run: '[ -f .node-version ] || printf "24.19.0\n" > .node-version'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
