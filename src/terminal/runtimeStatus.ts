@@ -3,6 +3,7 @@ import type {
   TerminalDebugLogResponse,
   InstallRootfsRequest,
   InstallRootfsResponse,
+  ProvisionDiagnosticsResponse,
   ProvisionToolchainResponse,
   ResetRuntimeResponse,
   Spec,
@@ -354,6 +355,31 @@ export async function readProvisionProgress(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The guest's own provisioning logs for [target]: the last stage it wrote
+ * plus the tails of its bootstrap and target install logs, or undefined when
+ * the bridge cannot provide them. Development builds show this on the
+ * install-failure screen.
+ */
+export async function readProvisionDiagnostics(
+  target: TerminalToolchainTarget,
+  runtime: Pick<Spec, 'readProvisionDiagnostics'> | null = nativeTerminalRuntime,
+): Promise<{stage?: string; log?: string; environment?: string} | undefined> {
+  if (runtime === null) return undefined;
+  let response: ProvisionDiagnosticsResponse;
+  try {
+    response = await runtime.readProvisionDiagnostics({target});
+  } catch {
+    return undefined;
+  }
+  if (response.status !== 'success') return undefined;
+  const view: {stage?: string; log?: string; environment?: string} = {};
+  if (typeof response.stage === 'string' && response.stage.length > 0) view.stage = response.stage;
+  if (typeof response.log === 'string' && response.log.length > 0) view.log = response.log;
+  if (typeof response.environment === 'string' && response.environment.length > 0) view.environment = response.environment;
+  return Object.keys(view).length === 0 ? undefined : view;
 }
 
 /** Provisions only the shell or harness requested for the first launch. */

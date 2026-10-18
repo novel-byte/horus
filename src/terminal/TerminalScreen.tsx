@@ -29,6 +29,7 @@ import {TerminalGrid, TERMINAL_CELL_HEIGHT, type NativeScreenState} from './Term
 import {terminalMouseWheelSequence, type TerminalMouseWheel} from './terminalMouse';
 import {
   installRootfs,
+  readProvisionDiagnostics,
   readTerminalRuntimeStatus,
   type TerminalRuntimeStatusView,
 } from './runtimeStatus';
@@ -376,11 +377,32 @@ export function TerminalScreen({client: providedClient, runtime = undefined, onB
     const stage = installStageRef.current;
     const log = cleanInstallLog(rawLog);
     setInstallFailure({kind: kind ?? classifyInstallFailure(rawLog, stage, undefined), ...(stage === undefined ? {} : {stage}), ...(log === undefined ? {} : {log})});
+    if (log === undefined) {
+      // The guest tees its provisioning output into its own log files, so the
+      // visible terminal stays empty. Ask the bridge for those tails instead.
+      void readProvisionDiagnostics(toolchain).then(diagnostics => {
+        if (!mountedRef.current || diagnostics === undefined) return;
+        setInstallFailure(current => {
+          if (current === undefined || (current.log !== undefined && current.log.length > 0)) return current;
+          const sections = [
+            diagnostics.stage === undefined ? undefined : `stage: ${diagnostics.stage}`,
+            diagnostics.environment,
+            diagnostics.log,
+          ].filter((section): section is string => section !== undefined && section.length > 0);
+          if (sections.length === 0) return current;
+          return {
+            ...current,
+            ...(diagnostics.stage === undefined ? {} : {stage: diagnostics.stage}),
+            log: sections.join('\n\n'),
+          };
+        });
+      });
+    }
     void readDeviceSnapshot().then(snapshot => {
       if (!mountedRef.current || snapshot?.online !== false) return;
       setInstallFailure(current => current === undefined ? current : {...current, kind: 'offline'});
     });
-  }, [completionMarker]);
+  }, [completionMarker, toolchain]);
 
   const disposeAttachment = React.useCallback(() => {
     isAttachedRef.current = false;

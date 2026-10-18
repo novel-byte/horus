@@ -178,6 +178,27 @@ export type ProvisionProgressResponse = {
   line?: string;
 };
 
+export type ProvisionDiagnosticsRequest = {
+  target: TerminalToolchainTarget;
+};
+
+/**
+ * The guest's own provisioning log for one target: the last stage it wrote and
+ * the tails of its bootstrap/install logs, plus a short environment summary.
+ * Development builds surface it on the install-failure screen so a failed
+ * first run can be read on the device, without adb.
+ */
+export type ProvisionDiagnosticsResponse = {
+  status: 'success' | 'error';
+  /** The last stage the guest recorded, e.g. `codex_failed`. */
+  stage?: string;
+  /** Tails of the guest bootstrap and target install logs, credential-free. */
+  log?: string;
+  /** Android release, ABI, free storage, and the DNS servers the guest uses. */
+  environment?: string;
+  errorCode?: TerminalRuntimeErrorCode;
+};
+
 export type ActivateRootfsRequest = {
   requestId: string;
   rootfsId: string;
@@ -556,6 +577,8 @@ export interface Spec extends TurboModule {
   provisionToolchain(request: ProvisionToolchainRequest): Promise<ProvisionToolchainResponse>;
   /** What the running system package install last reported, for progress while provisioning. */
   readProvisionProgress(): Promise<ProvisionProgressResponse>;
+  /** The guest's own provisioning logs for one target, shown when its install fails. */
+  readProvisionDiagnostics(request: ProvisionDiagnosticsRequest): Promise<ProvisionDiagnosticsResponse>;
   resetRuntime(request: ResetRuntimeRequest): Promise<ResetRuntimeResponse>;
   startSession(request: StartSessionRequest): Promise<StartSessionResponse>;
   listTerminalSessions(request: ListTerminalSessionsRequest): Promise<ListTerminalSessionsResponse>;

@@ -3,6 +3,7 @@ package com.scariflabs.horus.terminal
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -22,6 +23,7 @@ import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.scariflabs.horus.specs.NativeTerminalRuntimeSpec
 import java.io.File
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -485,6 +487,122 @@ class TerminalRuntimeModule(
         putString("tail", snapshot.tail)
       },
     )
+  }
+
+  /**
+   * The guest's own provisioning logs for one target, so a failed first-run
+   * install can be read on the device without adb. The tails are bounded and
+   * credential-free; the guest owns the files, so links are never followed.
+   */
+  override fun readProvisionDiagnostics(request: ReadableMap, promise: Promise) {
+    if (isInvalidated()) {
+      promise.resolve(errorStatus("internal_error"))
+      return
+    }
+    val target = stringField(request, "target")
+    if (target == null || !TerminalRuntimeContract.isValidToolchainTarget(target)) {
+      promise.resolve(errorStatus("invalid_request"))
+      return
+    }
+    try {
+      val distro = store.readActiveRecord()?.distro ?: RootfsCatalog.DISTRO_ALPINE
+      val rootfsDir = runCatching {
+        store.ensureLayout()
+        store.activeRootfsDir()
+      }.getOrNull()
+      val logDirectories = LinkedHashSet<File>()
+      fun addDirectory(directory: File?) {
+        if (directory != null && directory.isDirectory && !Files.isSymbolicLink(directory.toPath())) {
+          logDirectories.add(directory)
+        }
+      }
+      val harnessKey = when (target) {
+        TerminalRuntimeContract.TOOLCHAIN_TARGET_CLAUDE -> "claude"
+        TerminalRuntimeContract.TOOLCHAIN_TARGET_CODEX -> "codex"
+        TerminalRuntimeContract.TOOLCHAIN_TARGET_OPENCODE -> "opencode"
+        else -> null
+      }
+      addDirectory(File(paths.homeFor(distro), DIAGNOSTICS_CACHE_RELATIVE_PATH))
+      if (harnessKey != null) {
+        addDirectory(File(paths.harnessHomeFor(distro, harnessKey), DIAGNOSTICS_CACHE_RELATIVE_PATH))
+      }
+      if (rootfsDir != null) {
+        addDirectory(File(rootfsDir, "root/$DIAGNOSTICS_CACHE_RELATIVE_PATH"))
+      }
+
+      val stage = logDirectories.asSequence()
+        .map { File(it, PROVISION_STAGE_FILE_NAME) }
+        .mapNotNull { readDiagnosticTail(it, MAX_PROVISION_STAGE_BYTES)?.trim() }
+        .firstOrNull { it.isNotEmpty() }
+        ?.take(MAX_PROVISION_STAGE_CHARS)
+        .orEmpty()
+
+      val logNames = linkedSetOf(ALPINE_BOOTSTRAP_LOG_NAME, "$target-install.log")
+      val log = buildString {
+        for (directory in logDirectories) {
+          for (name in logNames) {
+            val tail = readDiagnosticTail(File(directory, name), MAX_PROVISION_LOG_TAIL_BYTES) ?: continue
+            if (tail.isBlank()) continue
+            append("== $name @ ${directory.name} ==\n")
+            append(tail.trimEnd())
+            append("\n\n")
+          }
+        }
+      }.trim().take(MAX_PROVISION_DIAGNOSTIC_CHARS)
+
+      promise.resolve(
+        Arguments.createMap().apply {
+          putString("status", "success")
+          if (stage.isNotEmpty()) putString("stage", stage)
+          if (log.isNotEmpty()) putString("log", log)
+          val environment = provisionEnvironmentSummary(rootfsDir)
+          if (environment.isNotEmpty()) putString("environment", environment)
+        },
+      )
+    } catch (_: Exception) {
+      promise.resolve(errorStatus("internal_error"))
+    }
+  }
+
+  /** The tail of an app-owned regular file, or null when it is missing or a link. */
+  private fun readDiagnosticTail(file: File, maxBytes: Int): String? = runCatching {
+    if (!file.isFile || Files.isSymbolicLink(file.toPath())) return@runCatching null
+    val length = file.length()
+    if (length <= 0L) return@runCatching ""
+    val start = (length - maxBytes).coerceAtLeast(0L)
+    java.io.RandomAccessFile(file, "r").use { input ->
+      input.seek(start)
+      val size = (length - start).toInt()
+      val bytes = ByteArray(size)
+      var offset = 0
+      while (offset < size) {
+        val read = input.read(bytes, offset, size - offset)
+        if (read < 0) break
+        offset += read
+      }
+      val text = String(bytes, 0, offset, StandardCharsets.UTF_8)
+      // Drop a partially read first line when the tail started mid-file.
+      if (start > 0L) text.substringAfter('\n', text) else text
+    }
+  }.getOrNull()
+
+  /** A one-line environment summary: what the guest ran on and reached. */
+  private fun provisionEnvironmentSummary(rootfsDir: File?): String = buildString {
+    append("android=").append(Build.VERSION.RELEASE).append(" sdk=").append(Build.VERSION.SDK_INT)
+    append(" abi=").append(Build.SUPPORTED_ABIS.firstOrNull() ?: "?")
+    rootfsDir?.let { append(" freeMB=").append(it.usableSpace / (1024L * 1024L)) }
+    val dns = activeDiagnosticDnsServers()
+    if (dns.isNotEmpty()) append(" dns=").append(dns.take(4).joinToString(","))
+  }
+
+  private fun activeDiagnosticDnsServers(): List<String> = try {
+    val connectivity = appContext.getSystemService(ConnectivityManager::class.java)
+    val network = connectivity?.activeNetwork ?: return emptyList()
+    connectivity.getLinkProperties(network)?.dnsServers
+      ?.mapNotNull { it.hostAddress?.trim()?.takeIf(String::isNotEmpty) }
+      .orEmpty()
+  } catch (_: RuntimeException) {
+    emptyList()
   }
 
   override fun installRootfs(request: ReadableMap, promise: Promise) {
@@ -1574,6 +1692,13 @@ class TerminalRuntimeModule(
     const val GUEST_FILE_IDLE_SECONDS = 30L
     const val GUEST_FILE_QUEUE_CAPACITY = 8
     const val GUEST_FILE_MAX_PATH_COMPONENTS = 16
+    const val DIAGNOSTICS_CACHE_RELATIVE_PATH = ".cache/horus"
+    const val PROVISION_STAGE_FILE_NAME = "provision-stage"
+    const val ALPINE_BOOTSTRAP_LOG_NAME = "alpine-bootstrap.log"
+    const val MAX_PROVISION_STAGE_BYTES = 256
+    const val MAX_PROVISION_STAGE_CHARS = 64
+    const val MAX_PROVISION_LOG_TAIL_BYTES = 6_000
+    const val MAX_PROVISION_DIAGNOSTIC_CHARS = 16_000
     val NATIVE_READY_MARKER_PATTERN = Regex("(?:^|[\\r\\n])HORUS_TOOLCHAIN_READY(?:[\\r\\n]|$)")
   }
 }

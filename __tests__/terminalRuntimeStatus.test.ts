@@ -12,6 +12,7 @@ jest.mock('../src/native/NativeTerminalRuntime', () => {
 
 import {
   activateRootfs,
+  readProvisionDiagnostics,
   readProvisionProgress,
   isTerminalRuntimeStatusResponse,
   importRootfs,
@@ -332,6 +333,33 @@ describe('typed install/reset wrappers', () => {
     await expect(readProvisionProgress(reply('rm -rf / … 5%'))).resolves.toBeUndefined();
     await expect(readProvisionProgress(reply('Installing packages… 1000%'))).resolves.toBeUndefined();
     await expect(readProvisionProgress({readProvisionProgress: jest.fn().mockRejectedValue(new Error('gone'))})).resolves.toBeUndefined();
+  });
+
+  it('reads the guest provisioning logs for the requested target', async () => {
+    const runtime = {
+      readProvisionDiagnostics: jest.fn().mockResolvedValue({
+        status: 'success',
+        stage: 'codex_failed',
+        log: '== codex-install.log @ horus ==\nnpm ERR! code EACCES',
+        environment: 'android=14 sdk=34 abi=arm64-v8a freeMB=2048',
+      }),
+    };
+    await expect(readProvisionDiagnostics('codex', runtime)).resolves.toEqual({
+      stage: 'codex_failed',
+      log: '== codex-install.log @ horus ==\nnpm ERR! code EACCES',
+      environment: 'android=14 sdk=34 abi=arm64-v8a freeMB=2048',
+    });
+    expect(runtime.readProvisionDiagnostics).toHaveBeenCalledWith({target: 'codex'});
+  });
+
+  it('drops empty diagnostics and tolerates a missing bridge', async () => {
+    await expect(readProvisionDiagnostics('shell', {readProvisionDiagnostics: jest.fn().mockResolvedValue({status: 'success'})}))
+      .resolves.toBeUndefined();
+    await expect(readProvisionDiagnostics('shell', {readProvisionDiagnostics: jest.fn().mockResolvedValue({status: 'error', errorCode: 'not_installed'})}))
+      .resolves.toBeUndefined();
+    await expect(readProvisionDiagnostics('shell', {readProvisionDiagnostics: jest.fn().mockRejectedValue(new Error('gone'))}))
+      .resolves.toBeUndefined();
+    await expect(readProvisionDiagnostics('shell', null)).resolves.toBeUndefined();
   });
 
   it('activates an installed rootfs and validates the answer', async () => {
