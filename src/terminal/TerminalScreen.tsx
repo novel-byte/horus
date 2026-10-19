@@ -386,6 +386,7 @@ export function TerminalScreen({client: providedClient, runtime = undefined, onB
           if (current === undefined || (current.log !== undefined && current.log.length > 0)) return current;
           const sections = [
             diagnostics.stage === undefined ? undefined : `stage: ${diagnostics.stage}`,
+            diagnostics.readiness,
             diagnostics.environment,
             diagnostics.log,
           ].filter((section): section is string => section !== undefined && section.length > 0);
@@ -426,30 +427,18 @@ export function TerminalScreen({client: providedClient, runtime = undefined, onB
     deliverCommandFailure();
   }, [deliverCommandFailure, deliverCompletion]);
 
+  const finishInstallFailure = React.useCallback(() => {
+    setState('error');
+    setError(toolchainInstallError(toolchain));
+    showInstallFailure();
+    deliverCommandFailure();
+  }, [deliverCommandFailure, showInstallFailure, toolchain]);
+
   /**
-   * Ends the screen's session, whether the end arrived live or was found on
-   * reattaching (after the app was in the background, or on resume): a failed
-   * install gets the failure screen either way.
+   * Reports a session that ended on its own, e.g. the app exited or the shell
+   * was closed: its last screen plus how it ended.
    */
-  const finishSession = React.useCallback((exit: TerminalSessionExitView) => {
-    // The end may arrive twice: live, and again from the replay on reattaching.
-    if (activeSessionRef.current !== exit.sessionId) return;
-    client.dispose();
-    isAttachedRef.current = false;
-    attachmentRef.current = undefined;
-    setNativeSessionId(undefined);
-    setTerminalInputSessionId(undefined);
-    setNativeHarnessReady(false);
-    if (!mountedRef.current) return;
-    // A resumed session is assumed installed, so its failed stage counts too.
-    if (!installReadyRef.current || installStageRef.current?.endsWith('_failed') === true) {
-      activeSessionRef.current = undefined;
-      setState('error');
-      setError(toolchainInstallError(toolchain));
-      showInstallFailure();
-      deliverCommandFailure();
-      return;
-    }
+  const settleAppExit = React.useCallback((exit: TerminalSessionExitView) => {
     // One-off shell commands (clones) report through their completion
     // marker; an interactive shell gets the exit screen like an app, or
     // `exit` would leave the install placeholder behind.
@@ -474,7 +463,43 @@ export function TerminalScreen({client: providedClient, runtime = undefined, onB
       });
     }
     handleSessionExited(exit.signal);
-  }, [client, completionMarker, deliverCommandFailure, handleSessionExited, nativeHarness, showInstallFailure, toolchain]);
+  }, [completionMarker, handleSessionExited, nativeHarness, toolchain]);
+
+  /**
+   * Ends the screen's session, whether the end arrived live or was found on
+   * reattaching (after the app was in the background, or on resume): a failed
+   * install gets the failure screen either way.
+   */
+  const finishSession = React.useCallback((exit: TerminalSessionExitView) => {
+    // The end may arrive twice: live, and again from the replay on reattaching.
+    if (activeSessionRef.current !== exit.sessionId) return;
+    client.dispose();
+    isAttachedRef.current = false;
+    attachmentRef.current = undefined;
+    setNativeSessionId(undefined);
+    setTerminalInputSessionId(undefined);
+    setNativeHarnessReady(false);
+    if (!mountedRef.current) return;
+    activeSessionRef.current = undefined;
+    // A resumed session is assumed installed, so its failed stage counts too.
+    if (installStageRef.current?.endsWith('_failed') === true) {
+      finishInstallFailure();
+      return;
+    }
+    if (installReadyRef.current) {
+      settleAppExit(exit);
+      return;
+    }
+    // The ready marker is a transient line the app scans from the byte stream,
+    // so it can race the exit event and be missed even though the guest really
+    // finished installing. Ask the guest's own stage before blaming the
+    // install, and treat a completed stage as a normal exit.
+    void readProvisionDiagnostics(toolchain).then(diagnostics => {
+      if (!mountedRef.current) return;
+      if (diagnostics?.stage === 'ready') settleAppExit(exit);
+      else finishInstallFailure();
+    });
+  }, [client, finishInstallFailure, settleAppExit, toolchain]);
 
   const openTerminalLink = React.useCallback((url: string) => {
     void openTrustedTerminalLink(url).catch(() => {

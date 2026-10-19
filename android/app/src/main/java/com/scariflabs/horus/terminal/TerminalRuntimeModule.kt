@@ -557,6 +557,8 @@ class TerminalRuntimeModule(
           if (log.isNotEmpty()) putString("log", log)
           val environment = provisionEnvironmentSummary(rootfsDir)
           if (environment.isNotEmpty()) putString("environment", environment)
+          val readiness = provisionReadinessSummary(rootfsDir, target)
+          if (readiness.isNotEmpty()) putString("readiness", readiness)
         },
       )
     } catch (_: Exception) {
@@ -603,6 +605,31 @@ class TerminalRuntimeModule(
       .orEmpty()
   } catch (_: RuntimeException) {
     emptyList()
+  }
+
+  /**
+   * Which files the app checks to call the active rootfs provisioned, so a
+   * failure report shows whether the install actually landed. Each entry is
+   * `name=y` when the file exists (and is executable, for the tools).
+   */
+  private fun provisionReadinessSummary(rootfsDir: File?, target: String): String {
+    if (rootfsDir == null) return ""
+    val checks = listOf(
+      Triple("zsh", listOf(File(rootfsDir, "bin/zsh"), File(rootfsDir, "usr/bin/zsh")), true),
+      Triple("git", listOf(File(rootfsDir, "usr/bin/git")), true),
+      Triple("rg", listOf(File(rootfsDir, "usr/bin/rg")), true),
+      Triple("curl", listOf(File(rootfsDir, "usr/bin/curl")), true),
+      Triple("jq", listOf(File(rootfsDir, "usr/bin/jq")), true),
+      Triple("python3", listOf(File(rootfsDir, "usr/bin/python3")), true),
+      Triple("less", listOf(File(rootfsDir, "usr/bin/less")), true),
+      Triple("ld", listOf(File(rootfsDir, "lib/ld-linux-aarch64.so.1")), false),
+      Triple("utc", listOf(File(rootfsDir, "usr/share/zoneinfo/UTC")), false),
+    )
+    val parts = checks.joinToString(" ") { (name, files, needsExecute) ->
+      val present = files.any { it.isFile && (!needsExecute || it.canExecute()) }
+      "$name=${if (present) "y" else "n"}"
+    }
+    return "readiness($target): $parts"
   }
 
   override fun installRootfs(request: ReadableMap, promise: Promise) {

@@ -196,6 +196,8 @@ export type ProvisionDiagnosticsResponse = {
   log?: string;
   /** Android release, ABI, free storage, and the DNS servers the guest uses. */
   environment?: string;
+  /** Which rootfs files the app checks for provisioning, e.g. `zsh=y rg=n`. */
+  readiness?: string;
   errorCode?: TerminalRuntimeErrorCode;
 };
 

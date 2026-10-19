@@ -366,7 +366,7 @@ export async function readProvisionProgress(
 export async function readProvisionDiagnostics(
   target: TerminalToolchainTarget,
   runtime: Pick<Spec, 'readProvisionDiagnostics'> | null = nativeTerminalRuntime,
-): Promise<{stage?: string; log?: string; environment?: string} | undefined> {
+): Promise<{stage?: string; log?: string; environment?: string; readiness?: string} | undefined> {
   if (runtime === null) return undefined;
   let response: ProvisionDiagnosticsResponse;
   try {
@@ -375,10 +375,11 @@ export async function readProvisionDiagnostics(
     return undefined;
   }
   if (response.status !== 'success') return undefined;
-  const view: {stage?: string; log?: string; environment?: string} = {};
+  const view: {stage?: string; log?: string; environment?: string; readiness?: string} = {};
   if (typeof response.stage === 'string' && response.stage.length > 0) view.stage = response.stage;
   if (typeof response.log === 'string' && response.log.length > 0) view.log = response.log;
   if (typeof response.environment === 'string' && response.environment.length > 0) view.environment = response.environment;
+  if (typeof response.readiness === 'string' && response.readiness.length > 0) view.readiness = response.readiness;
   return Object.keys(view).length === 0 ? undefined : view;
 }
 

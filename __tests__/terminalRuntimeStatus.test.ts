@@ -342,12 +342,14 @@ describe('typed install/reset wrappers', () => {
         stage: 'codex_failed',
         log: '== codex-install.log @ horus ==\nnpm ERR! code EACCES',
         environment: 'android=14 sdk=34 abi=arm64-v8a freeMB=2048',
+        readiness: 'readiness(codex): zsh=y rg=n',
       }),
     };
     await expect(readProvisionDiagnostics('codex', runtime)).resolves.toEqual({
       stage: 'codex_failed',
       log: '== codex-install.log @ horus ==\nnpm ERR! code EACCES',
       environment: 'android=14 sdk=34 abi=arm64-v8a freeMB=2048',
+      readiness: 'readiness(codex): zsh=y rg=n',
     });
     expect(runtime.readProvisionDiagnostics).toHaveBeenCalledWith({target: 'codex'});
   });
