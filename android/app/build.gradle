@@ -267,7 +267,9 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 6
-        versionName "1.1.0"
+        // Fork builds pass -PhorusVersionName so a failure report names the
+        // exact build; upstream keeps the plain release version.
+        versionName (project.findProperty("horusVersionName") ?: "1.1.0").toString()
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
     sourceSets {

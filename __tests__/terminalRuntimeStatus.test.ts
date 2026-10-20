@@ -12,8 +12,11 @@ jest.mock('../src/native/NativeTerminalRuntime', () => {
 
 import {
   activateRootfs,
+  provisionInstalled,
+  provisionReadinessComplete,
   readProvisionDiagnostics,
   readProvisionProgress,
+  readProvisionState,
   isTerminalRuntimeStatusResponse,
   importRootfs,
   installRootfs,
@@ -362,6 +365,45 @@ describe('typed install/reset wrappers', () => {
     await expect(readProvisionDiagnostics('shell', {readProvisionDiagnostics: jest.fn().mockRejectedValue(new Error('gone'))}))
       .resolves.toBeUndefined();
     await expect(readProvisionDiagnostics('shell', null)).resolves.toBeUndefined();
+  });
+
+  it('reads a readiness summary as complete only when every check is present', () => {
+    expect(provisionReadinessComplete(undefined)).toBe(false);
+    expect(provisionReadinessComplete('readiness(shell): zsh=y git=y rg=y')).toBe(true);
+    expect(provisionReadinessComplete('readiness(shell): zsh=y rg=n')).toBe(false);
+    expect(provisionReadinessComplete('readiness(shell):')).toBe(false);
+  });
+
+  it('treats a completed stage or a fully ready shell as installed', () => {
+    expect(provisionInstalled(undefined, 'shell')).toBe(false);
+    expect(provisionInstalled({stage: 'ready'}, 'codex')).toBe(true);
+    expect(provisionInstalled({stage: 'codex_failed', readiness: 'readiness(codex): zsh=y'}, 'codex')).toBe(false);
+    expect(provisionInstalled({readiness: 'readiness(shell): zsh=y rg=y'}, 'shell')).toBe(true);
+    expect(provisionInstalled({stage: 'verify', readiness: 'readiness(shell): zsh=y'}, 'shell')).toBe(true);
+    expect(provisionInstalled({readiness: 'readiness(shell): zsh=y'}, 'codex')).toBe(false);
+    expect(provisionInstalled({readiness: 'readiness(shell): zsh=y rg=n'}, 'shell')).toBe(false);
+  });
+
+  it('reads the exit state once and retries a missing bridge answer', async () => {
+    const ready = jest.fn().mockResolvedValue({status: 'success', stage: 'ready', log: 'done'});
+    await expect(readProvisionState('shell', {readProvisionDiagnostics: ready})).resolves.toEqual({
+      installed: true,
+      diagnostics: {stage: 'ready', log: 'done'},
+    });
+    expect(ready).toHaveBeenCalledTimes(1);
+
+    const recovers = jest.fn()
+      .mockResolvedValueOnce({status: 'error', errorCode: 'internal_error'})
+      .mockResolvedValueOnce({status: 'success', readiness: 'readiness(shell): zsh=y rg=y'});
+    await expect(readProvisionState('shell', {readProvisionDiagnostics: recovers})).resolves.toEqual({
+      installed: true,
+      diagnostics: {readiness: 'readiness(shell): zsh=y rg=y'},
+    });
+    expect(recovers).toHaveBeenCalledTimes(2);
+
+    const missing = jest.fn().mockResolvedValue({status: 'success'});
+    await expect(readProvisionState('shell', {readProvisionDiagnostics: missing})).resolves.toEqual({installed: false});
+    expect(missing).toHaveBeenCalledTimes(2);
   });
 
   it('activates an installed rootfs and validates the answer', async () => {

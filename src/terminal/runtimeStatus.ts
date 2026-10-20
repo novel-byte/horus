@@ -357,6 +357,13 @@ export async function readProvisionProgress(
   }
 }
 
+export type ProvisionDiagnosticsView = {
+  stage?: string;
+  log?: string;
+  environment?: string;
+  readiness?: string;
+};
+
 /**
  * The guest's own provisioning logs for [target]: the last stage it wrote
  * plus the tails of its bootstrap and target install logs, or undefined when
@@ -366,7 +373,7 @@ export async function readProvisionProgress(
 export async function readProvisionDiagnostics(
   target: TerminalToolchainTarget,
   runtime: Pick<Spec, 'readProvisionDiagnostics'> | null = nativeTerminalRuntime,
-): Promise<{stage?: string; log?: string; environment?: string; readiness?: string} | undefined> {
+): Promise<ProvisionDiagnosticsView | undefined> {
   if (runtime === null) return undefined;
   let response: ProvisionDiagnosticsResponse;
   try {
@@ -375,12 +382,66 @@ export async function readProvisionDiagnostics(
     return undefined;
   }
   if (response.status !== 'success') return undefined;
-  const view: {stage?: string; log?: string; environment?: string; readiness?: string} = {};
+  const view: ProvisionDiagnosticsView = {};
   if (typeof response.stage === 'string' && response.stage.length > 0) view.stage = response.stage;
   if (typeof response.log === 'string' && response.log.length > 0) view.log = response.log;
   if (typeof response.environment === 'string' && response.environment.length > 0) view.environment = response.environment;
   if (typeof response.readiness === 'string' && response.readiness.length > 0) view.readiness = response.readiness;
   return Object.keys(view).length === 0 ? undefined : view;
+}
+
+const READINESS_CHECK = /([a-zA-Z0-9_]+)=([yn])(?=\s|$)/g;
+
+/** Whether a readiness summary reports at least one check and every check present. */
+export function provisionReadinessComplete(readiness: string | undefined): boolean {
+  if (readiness === undefined) return false;
+  let checks = 0;
+  let complete = true;
+  for (const match of readiness.matchAll(READINESS_CHECK)) {
+    checks += 1;
+    if (match[2] !== 'y') complete = false;
+  }
+  return checks > 0 && complete;
+}
+
+/**
+ * Whether the guest's own records say the install finished. The stage file is
+ * the fast path; for the shell the readiness summary proves it from the files
+ * the launcher checks, which survive a lost stage write or a racy read.
+ */
+export function provisionInstalled(
+  diagnostics: ProvisionDiagnosticsView | undefined,
+  target: TerminalToolchainTarget,
+): boolean {
+  if (diagnostics === undefined) return false;
+  if (diagnostics.stage === 'ready') return true;
+  if (diagnostics.stage !== undefined && diagnostics.stage.endsWith('_failed')) return false;
+  return target === 'shell' && provisionReadinessComplete(diagnostics.readiness);
+}
+
+export type ProvisionState = {
+  installed: boolean;
+  diagnostics?: ProvisionDiagnosticsView;
+};
+
+/**
+ * The install state at session exit, read once so the decision and the failure
+ * screen cannot disagree. The bridge can briefly miss the guest files while
+ * the session is torn down, so a missing answer is retried once.
+ */
+export async function readProvisionState(
+  target: TerminalToolchainTarget,
+  runtime: Pick<Spec, 'readProvisionDiagnostics'> | null = nativeTerminalRuntime,
+): Promise<ProvisionState> {
+  let diagnostics = await readProvisionDiagnostics(target, runtime);
+  if (diagnostics === undefined) {
+    await new Promise(resolve => setTimeout(resolve, 250));
+    diagnostics = await readProvisionDiagnostics(target, runtime);
+  }
+  return {
+    installed: provisionInstalled(diagnostics, target),
+    ...(diagnostics === undefined ? {} : {diagnostics}),
+  };
 }
 
 /** Provisions only the shell or harness requested for the first launch. */

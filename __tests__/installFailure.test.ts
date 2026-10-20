@@ -1,3 +1,4 @@
+import {installFailureIssueUrl} from '../src/terminal/InstallFailedOverlay';
 import {classifyInstallFailure, cleanInstallLog, installFailureCopy} from '../src/terminal/installFailure';
 
 describe('installFailure', () => {
@@ -28,5 +29,22 @@ describe('installFailure', () => {
     expect(installFailureCopy({kind: 'network'}, 'codex').advice).toContain('Settings › Downloads');
     expect(installFailureCopy({kind: 'network'}, 'claude').advice).not.toContain('mirror');
     expect(installFailureCopy({kind: 'offline'}, 'opencode')).toEqual(expect.objectContaining({title: 'Couldn’t install OpenCode', reason: 'Your phone is offline.'}));
+  });
+});
+
+describe('installFailureIssueUrl', () => {
+  test('keeps the head (stage, readiness, build) as well as the tail of a long log', () => {
+    const log = `stage: ready\n\nreadiness(shell): zsh=y git=y rg=y\n\n${'x'.repeat(6000)}\nERROR: last line`;
+    const url = installFailureIssueUrl(
+      'shell',
+      {kind: 'unknown', stage: 'ready', log},
+      {appVersion: '1.1.0-abc1234', androidVersion: '13'},
+    );
+    const body = decodeURIComponent(url.slice(url.indexOf('body=') + 5));
+    expect(body).toContain('Horus: 1.1.0-abc1234');
+    expect(body).toContain('stage: ready');
+    expect(body).toContain('readiness(shell): zsh=y git=y rg=y');
+    expect(body).toContain('ERROR: last line');
+    expect(body.length).toBeLessThan(3200);
   });
 });

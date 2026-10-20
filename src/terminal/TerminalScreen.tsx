@@ -30,7 +30,9 @@ import {terminalMouseWheelSequence, type TerminalMouseWheel} from './terminalMou
 import {
   installRootfs,
   readProvisionDiagnostics,
+  readProvisionState,
   readTerminalRuntimeStatus,
+  type ProvisionDiagnosticsView,
   type TerminalRuntimeStatusView,
 } from './runtimeStatus';
 import type {TerminalToolchainTarget} from '../native/NativeTerminalRuntime';
@@ -81,7 +83,7 @@ type TerminalViewState = 'idle' | 'starting' | 'running' | 'stopped' | 'error';
 
 type TerminalRuntimeBridge = Pick<
   Spec,
-  'getRuntimeStatus' | 'installRootfs' | 'resetRuntime'
+  'getRuntimeStatus' | 'installRootfs' | 'readProvisionDiagnostics' | 'resetRuntime'
 >;
 
 const TERMINAL_LAYOUT_SETTLE_MS = 120;
@@ -275,6 +277,8 @@ export function TerminalScreen({client: providedClient, runtime = undefined, onB
   // The end of the install output, kept for the failure screen: a native
   // session's own copy goes away with the session.
   const installLogRef = React.useRef('');
+  // How the session ended, so a failure report shows why the app gave up.
+  const installExitSummaryRef = React.useRef<string | undefined>(undefined);
   const [installLogVisible, setInstallLogVisible] = React.useState(false);
   const [nativeScreen, setNativeScreen] = React.useState<NativeScreenState>({hasContent: false, alternate: false});
   const displayBufferRef = React.useRef<TerminalCellBuffer | undefined>(undefined);
@@ -371,36 +375,49 @@ export function TerminalScreen({client: providedClient, runtime = undefined, onB
    * login) report through onCommandFailure instead. Android's own view of the
    * network settles "offline" without guessing from the log.
    */
-  const showInstallFailure = React.useCallback((kind?: InstallFailureKind) => {
+  const showInstallFailure = React.useCallback((kind?: InstallFailureKind, diagnostics?: ProvisionDiagnosticsView) => {
     if (completionMarker !== undefined) return;
     const rawLog = installLogRef.current;
     const stage = installStageRef.current;
+    const context = installExitSummaryRef.current;
     const log = cleanInstallLog(rawLog);
-    setInstallFailure({kind: kind ?? classifyInstallFailure(rawLog, stage, undefined), ...(stage === undefined ? {} : {stage}), ...(log === undefined ? {} : {log})});
+    const withContext = (...parts: (string | undefined)[]): string | undefined => {
+      const sections = [context, ...parts].filter((section): section is string => section !== undefined && section.length > 0);
+      return sections.length === 0 ? undefined : sections.join('\n\n');
+    };
+    setInstallFailure({
+      kind: kind ?? classifyInstallFailure(rawLog, stage, undefined),
+      ...(stage === undefined ? {} : {stage}),
+      ...(log === undefined ? {} : {log: withContext(log) ?? log}),
+    });
     if (log === undefined) {
       // The guest tees its provisioning output into its own log files, so the
-      // visible terminal stays empty. Ask the bridge for those tails instead.
-      void readProvisionDiagnostics(toolchain).then(diagnostics => {
-        if (!mountedRef.current || diagnostics === undefined) return;
+      // visible terminal stays empty. Reuse the exit check's reading when it
+      // has one so the screen and the decision never disagree; otherwise ask
+      // the bridge for the tails.
+      const reading = diagnostics === undefined
+        ? readProvisionDiagnostics(toolchain, runtime)
+        : Promise.resolve(diagnostics);
+      void reading.then(resolved => {
+        if (!mountedRef.current || resolved === undefined) return;
         setInstallFailure(current => {
           if (current === undefined || (current.log !== undefined && current.log.length > 0)) return current;
-          const sections = [
-            diagnostics.stage === undefined ? undefined : `stage: ${diagnostics.stage}`,
-            diagnostics.readiness,
-            diagnostics.environment,
-            diagnostics.log,
-          ].filter((section): section is string => section !== undefined && section.length > 0);
-          if (sections.length === 0) return current;
-          const mergedLog = sections.join('\n\n');
-          const mergedStage = diagnostics.stage ?? current.stage;
+          const sections = withContext(
+            resolved.stage === undefined ? undefined : `stage: ${resolved.stage}`,
+            resolved.readiness,
+            resolved.environment,
+            resolved.log,
+          );
+          if (sections === undefined) return current;
+          const mergedStage = resolved.stage ?? current.stage;
           // The streamed terminal hid the guest log, so the first guess had
           // nothing to read; classify again now that the real log is here.
-          const mergedKind = current.kind === 'unknown' ? classifyInstallFailure(mergedLog, mergedStage, undefined) : current.kind;
+          const mergedKind = current.kind === 'unknown' ? classifyInstallFailure(sections, mergedStage, undefined) : current.kind;
           return {
             ...current,
             kind: mergedKind,
             ...(mergedStage === undefined ? {} : {stage: mergedStage}),
-            log: mergedLog,
+            log: sections,
           };
         });
       });
@@ -409,7 +426,7 @@ export function TerminalScreen({client: providedClient, runtime = undefined, onB
       if (!mountedRef.current || snapshot?.online !== false) return;
       setInstallFailure(current => current === undefined ? current : {...current, kind: 'offline'});
     });
-  }, [completionMarker, toolchain]);
+  }, [completionMarker, runtime, toolchain]);
 
   const disposeAttachment = React.useCallback(() => {
     isAttachedRef.current = false;
@@ -427,10 +444,10 @@ export function TerminalScreen({client: providedClient, runtime = undefined, onB
     deliverCommandFailure();
   }, [deliverCommandFailure, deliverCompletion]);
 
-  const finishInstallFailure = React.useCallback(() => {
+  const finishInstallFailure = React.useCallback((diagnostics?: ProvisionDiagnosticsView) => {
     setState('error');
     setError(toolchainInstallError(toolchain));
-    showInstallFailure();
+    showInstallFailure(undefined, diagnostics);
     deliverCommandFailure();
   }, [deliverCommandFailure, showInstallFailure, toolchain]);
 
@@ -481,6 +498,11 @@ export function TerminalScreen({client: providedClient, runtime = undefined, onB
     setNativeHarnessReady(false);
     if (!mountedRef.current) return;
     activeSessionRef.current = undefined;
+    const exitParts = [`reason=${exit.reason}`];
+    if (exit.exitCode !== undefined) exitParts.push(`code=${exit.exitCode}`);
+    if (exit.signal !== undefined) exitParts.push(`signal=${exit.signal}`);
+    exitParts.push(`marker=${installReadyRef.current ? 'seen' : 'missed'}`, `stream_stage=${installStageRef.current ?? 'none'}`);
+    installExitSummaryRef.current = `exit: ${exitParts.join(' ')}`;
     // A resumed session is assumed installed, so its failed stage counts too.
     if (installStageRef.current?.endsWith('_failed') === true) {
       finishInstallFailure();
@@ -491,15 +513,16 @@ export function TerminalScreen({client: providedClient, runtime = undefined, onB
       return;
     }
     // The ready marker is a transient line the app scans from the byte stream,
-    // so it can race the exit event and be missed even though the guest really
-    // finished installing. Ask the guest's own stage before blaming the
-    // install, and treat a completed stage as a normal exit.
-    void readProvisionDiagnostics(toolchain).then(diagnostics => {
+    // so it can race the session-exit event and be missed even though the guest
+    // finished installing. Ask the guest's own record before blaming the
+    // install: one read decides the screen and supplies its log, and a
+    // completed stage (or a fully ready shell) is reported as a normal exit.
+    void readProvisionState(toolchain, runtime).then(state => {
       if (!mountedRef.current) return;
-      if (diagnostics?.stage === 'ready') settleAppExit(exit);
-      else finishInstallFailure();
+      if (state.installed) settleAppExit(exit);
+      else finishInstallFailure(state.diagnostics);
     });
-  }, [client, finishInstallFailure, settleAppExit, toolchain]);
+  }, [client, finishInstallFailure, runtime, settleAppExit, toolchain]);
 
   const openTerminalLink = React.useCallback((url: string) => {
     void openTrustedTerminalLink(url).catch(() => {
@@ -819,6 +842,7 @@ export function TerminalScreen({client: providedClient, runtime = undefined, onB
     setAppExit(undefined);
     setInstallFailure(undefined);
     installLogRef.current = '';
+    installExitSummaryRef.current = undefined;
     setOutputHistoryGap(false);
     githubLoginOutputTailRef.current = '';
     openedGithubLoginUrlsRef.current.clear();

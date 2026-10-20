@@ -479,6 +479,40 @@ describe('TerminalScreen', () => {
     await ReactTestRenderer.act(async () => { renderer.unmount(); await flushAsync(); });
   });
 
+  test('treats a completed guest stage as a normal shell exit when the ready marker was missed', async () => {
+    const runtime = fakeRuntime();
+    const diagnostics = jest.fn(async () => ({
+      status: 'success',
+      stage: 'ready',
+      readiness: 'readiness(shell): zsh=y git=y rg=y curl=y jq=y python3=y less=y ld=y utc=y',
+      log: '== alpine-bootstrap.log @ horus ==\nOK: 78.7 MiB in 63 packages',
+    }));
+    runtime.spec.readProvisionDiagnostics = diagnostics as unknown as Spec['readProvisionDiagnostics'];
+    const client = new TerminalSessionClient(runtime.spec, handler => {
+      runtime.listeners.push(handler);
+      return () => { runtime.listeners.splice(runtime.listeners.indexOf(handler), 1); };
+    });
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(<TerminalScreen client={client} runtime={runtime.spec} runtimeReady sessionCommand="zsh -l" toolchain="shell" />);
+      await flushAsync();
+    });
+    await ReactTestRenderer.act(async () => {
+      // The install ran in this session, but its transient ready marker and the
+      // exit raced, so only the guest's stage was seen.
+      runtime.emit({type: 'output', sessionId: 's-1-1', seq: 1, base64: encodeTestBase64('HORUS_INSTALL_STAGE=start\nHORUS_INSTALL_STAGE=apk\nHORUS_INSTALL_STAGE=ready\n')});
+      await flushAsync();
+    });
+    await ReactTestRenderer.act(async () => {
+      runtime.emit({type: 'exit', sessionId: 's-1-1', reason: 'process_exit', exitCode: 0});
+      await flushAsync();
+    });
+    expect(runtime.spec.readProvisionDiagnostics).toHaveBeenCalledWith({target: 'shell'});
+    expect(renderer.root.findAllByProps({testID: 'terminal-install-failed'})).toHaveLength(0);
+    expect(renderer.root.findAllByProps({testID: 'terminal-app-exited'}).length).toBeGreaterThan(0);
+    await ReactTestRenderer.act(async () => { renderer.unmount(); await flushAsync(); });
+  });
+
   test('a shell reopened from its tile while still running closes cleanly, not as a failed install', async () => {
     const runtime = fakeRuntime();
     // The service hands back the running shell; its ready marker went by long ago.

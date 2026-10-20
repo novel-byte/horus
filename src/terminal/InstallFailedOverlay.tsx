@@ -9,8 +9,17 @@ import {installFailureCopy, type InstallFailure} from './installFailure';
 import {uiColors} from './palette';
 import {toolchainInstallLabel} from './toolchainLabels';
 
-// GitHub rejects very long prefilled URLs; the end of the log is what counts.
+// GitHub rejects very long prefilled URLs; keep the head (build id, stage,
+// readiness) and the end (the actual error) when the log does not fit.
 const MAX_ISSUE_LOG_CHARS = 3000;
+const ISSUE_LOG_HEAD_CHARS = 700;
+
+function issueLogExcerpt(log: string | undefined): string {
+  if (log === undefined) return '(empty)';
+  if (log.length <= MAX_ISSUE_LOG_CHARS) return log;
+  const tailChars = MAX_ISSUE_LOG_CHARS - ISSUE_LOG_HEAD_CHARS - 3;
+  return `${log.slice(0, ISSUE_LOG_HEAD_CHARS)}\n…\n${log.slice(-tailChars)}`;
+}
 
 /** A new-issue link prefilled with what Horus knows about the failed install. */
 export function installFailureIssueUrl(
@@ -29,7 +38,7 @@ export function installFailureIssueUrl(
     'Install log (check it for anything private before posting):',
     '',
     '```',
-    failure.log?.slice(-MAX_ISSUE_LOG_CHARS) ?? '(empty)',
+    issueLogExcerpt(failure.log),
     '```',
     '',
   ].join('\n');
