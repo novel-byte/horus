@@ -59,9 +59,12 @@ jobs:
         run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
       - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
       - run: npm ci --no-audit --no-fund
+      - name: Resolve build version name
+        id: build-version
+        run: echo "name=$(node -p "require('./package.json').version")-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
       - name: Build unsigned release APK
         working-directory: android
-        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace --max-workers=2
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace --max-workers=2 -PhorusVersionName=${{ steps.build-version.outputs.name }}
       - name: Decode signing keystore
         env:
           HORUS_KEYSTORE_BASE64: ${{ secrets.HORUS_KEYSTORE_BASE64 }}
