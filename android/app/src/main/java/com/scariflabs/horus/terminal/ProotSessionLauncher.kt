@@ -2314,11 +2314,33 @@ EOF
         unset HORUS_BOOTSTRAP
         exec /bin/sh -c "${'$'}HORUS_SESSION_COMMAND"
       '
+      # A crash while switching user or starting the shell is re-raised
+      # through PRoot and takes the session down with nothing on screen, so
+      # try both in a child first and keep a usable shell either way. The
+      # line is overwritten in place by the prompt when all goes well.
+      step() { printf '\r\033[2K[horus] %s\r' "${'$'}1"; }
       if [ -x /bin/busybox ]; then
+        step "checking the user switch"
+        if ! /bin/busybox su -p -c 'exit 0' "${'$'}session_username" </dev/null >/dev/null 2>&1; then
+          step "the user switch failed; continuing as guest root"
+          exec /bin/sh -c "${'$'}user_script"
+        fi
+        step "checking the login shell"
+        if ! /bin/busybox su -p -c 'exec zsh -lic "exit 0"' "${'$'}session_username" </dev/null >/dev/null 2>&1; then
+          printf '\r\033[2K[horus] zsh could not start; using the basic shell\n'
+          exec /bin/busybox su -p -c 'exec /bin/ash -l' "${'$'}session_username"
+        fi
+        step "starting the shell"
         exec /bin/busybox su -p -c "${'$'}user_script" "${'$'}session_username"
       fi
       # Debian has no BusyBox; util-linux setpriv changes ids without PAM,
       # which PRoot's emulated root cannot satisfy.
+      step "checking the login shell"
+      if ! setpriv --reuid="${'$'}session_uid" --regid="${'$'}session_gid" --clear-groups -- /bin/sh -c 'exec zsh -lic "exit 0"' </dev/null >/dev/null 2>&1; then
+        printf '\r\033[2K[horus] zsh could not start; using the basic shell\n'
+        exec setpriv --reuid="${'$'}session_uid" --regid="${'$'}session_gid" --clear-groups -- /bin/sh -l
+      fi
+      step "starting the shell"
       exec setpriv --reuid="${'$'}session_uid" --regid="${'$'}session_gid" --clear-groups -- /bin/sh -c "${'$'}user_script"
     """.trimIndent()
     // The embedded Codex script supplies its own indent, including its first

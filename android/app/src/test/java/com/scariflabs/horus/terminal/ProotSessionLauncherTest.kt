@@ -1373,6 +1373,50 @@ class ProotSessionLauncherTest {
   }
 
   @Test
+  fun keepsAUsableShellWhenTheUserSwitchOrLoginShellFails() {
+    val base = Files.createTempDirectory("horus-session-fallback").toFile()
+    try {
+      val rootfs = File(base, "rootfs").apply { mkdirs() }
+      File(rootfs, "etc").mkdirs()
+      val home = File(base, "home").apply { mkdirs() }
+      val workspace = File(base, "workspace").apply { mkdirs() }
+      val hostProc = File(base, "proc").apply { mkdirs() }
+      File(hostProc, "stat").writeText("live stat\n")
+      File(hostProc, "loadavg").writeText("0.01 0.02 0.03 1/2 3\n")
+
+      val launch = launcher(base, hostProc).toolchainSessionLaunchSpec(
+        rootfsDir = rootfs,
+        guestHomeDir = home,
+        workspaceDir = workspace,
+        guestUsername = "luna",
+        target = TerminalRuntimeContract.TOOLCHAIN_TARGET_SHELL,
+        sessionCommand = "stty echo; exec zsh -l",
+      )
+      val script = launch.argv[launch.argv.lastIndexOf("-c") + 1]
+
+      val switchProbe = script.indexOf("/bin/busybox su -p -c 'exit 0'")
+      val handoff = script.indexOf("exec /bin/busybox su -p -c \"${'$'}user_script\"")
+      assertTrue("the user switch is probed in a child", switchProbe >= 0)
+      assertTrue("the probe runs before the session is handed over", switchProbe < handoff)
+      val fallbacks = script.substring(switchProbe, handoff)
+      assertTrue(
+        "a failed user switch keeps the session on the guest root",
+        fallbacks.contains("exec /bin/sh -c \"${'$'}user_script\""),
+      )
+      assertTrue(
+        "a crashing login shell falls back to the basic shell",
+        fallbacks.contains("/bin/busybox su -p -c 'exec /bin/ash -l'"),
+      )
+      assertTrue(
+        "the login shell is probed as the target user",
+        fallbacks.contains("/bin/busybox su -p -c 'exec zsh -lic \"exit 0\"'"),
+      )
+    } finally {
+      base.deleteRecursively()
+    }
+  }
+
+  @Test
   fun rejectsClaudeRootAbsoluteSymlinkForNonRootSessions() {
     val base = Files.createTempDirectory("horus-claude-launcher").toFile()
     try {
